@@ -84,7 +84,6 @@ async def async_setup_entry(
             "Precipitation",
             "mm/h",
         ),
-
         # AQI summary
         KaustWeatherSensor(
             entry.entry_id,
@@ -100,7 +99,6 @@ async def async_setup_entry(
             "AQI Status",
             None,
         ),
-
         # AQI sub-indices
         KaustWeatherSensor(
             entry.entry_id,
@@ -144,7 +142,6 @@ async def async_setup_entry(
             "PM10 AQI Index",
             "AQI",
         ),
-
         # Pollutants
         KaustWeatherSensor(entry.entry_id, coordinator, "no", "NO", "ppb"),
         KaustWeatherSensor(entry.entry_id, coordinator, "no2", "NO2", "ppb"),
@@ -166,7 +163,6 @@ async def async_setup_entry(
             "PM2.5",
             CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
         ),
-
         # Derived rainfall totals
         KaustWeatherDerivedRainSensor(
             entry.entry_id,
@@ -283,9 +279,8 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
         self._attr_name = name
         self._attr_unique_id = f"{entry_id}_{sensor_key}"
         self._attr_native_unit_of_measurement = unit
-        self._attr_suggested_display_precision = 1
 
-        measurement_keys = {
+        numeric_measurement_keys = {
             "temperature",
             "humidity",
             "wind_speed",
@@ -308,9 +303,10 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
             "pm10",
             "pm25",
         }
-        if sensor_key in measurement_keys:
+        if sensor_key in numeric_measurement_keys:
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
+        # Only numeric sensors get display precision/device classes
         if sensor_key == "temperature":
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
             self._attr_suggested_display_precision = 1
@@ -320,23 +316,19 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
         elif sensor_key == "wind_speed":
             self._attr_device_class = SensorDeviceClass.WIND_SPEED
             self._attr_suggested_display_precision = 1
-        elif sensor_key in {"pm10", "pm25"}:
-            self._attr_device_class = SensorDeviceClass.PM25 if sensor_key == "pm25" else None
-            self._attr_suggested_display_precision = 0
         elif sensor_key == "precipitation":
             self._attr_device_class = SensorDeviceClass.PRECIPITATION_INTENSITY
             self._attr_suggested_display_precision = 2
         elif sensor_key == "solar_radiation":
             self._attr_suggested_display_precision = 0
-        elif sensor_key in {
-            "aqi",
-            "o3_index",
-            "co_index",
-            "so2_index",
-            "no2_index",
-            "pm25_index",
-            "pm10_index",
-        }:
+        elif sensor_key == "aqi":
+            self._attr_suggested_display_precision = 0
+        elif sensor_key in {"o3_index", "co_index", "so2_index", "no2_index", "pm25_index", "pm10_index"}:
+            self._attr_suggested_display_precision = 0
+        elif sensor_key == "pm25":
+            self._attr_device_class = SensorDeviceClass.PM25
+            self._attr_suggested_display_precision = 0
+        elif sensor_key in {"pm10", "no", "no2", "co", "o3", "so2", "h2s"}:
             self._attr_suggested_display_precision = 0
 
     @property
