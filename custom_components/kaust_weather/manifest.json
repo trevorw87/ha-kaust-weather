@@ -1,0 +1,10 @@
+{
+  "domain": "kaust_weather",
+  "name": "KAUST Weather",
+  "version": "0.2.0",
+  "config_flow": true,
+  "documentation": "https://kaustweather.kaust.edu.sa/",
+  "requirements": [],
+  "codeowners": [],
+  "iot_class": "cloud_polling"
+}
