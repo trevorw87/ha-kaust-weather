@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import timedelta
 from typing import Any
-
-from aiohttp import ClientError
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -44,22 +43,22 @@ class KaustWeatherCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return await response.json()
 
     async def _async_update_data(self) -> dict[str, Any]:
-        try:
-            live = await self._fetch_json(LIVE_URL)
-            graph2 = await self._fetch_json(GRAPH2_URL)
-            graph3 = await self._fetch_json(GRAPH3_URL)
-
-            return {
-                "live": live,
-                "graph2": graph2,
-                "graph3": graph3,
-            }
-
-        except ClientError as err:
-            raise UpdateFailed(
-                f"HTTP error communicating with KAUST weather API: {err}"
-            ) from err
-        except Exception as err:
-            raise UpdateFailed(
-                f"Unexpected error communicating with KAUST weather API: {err}"
-            ) from err
+        endpoints = {"live": LIVE_URL, "graph2": GRAPH2_URL, "graph3": GRAPH3_URL}
+        results = await asyncio.gather(
+            *(self._fetch_json(url) for url in endpoints.values()),
+            return_exceptions=True,
+        )
+        data: dict[str, Any] = {}
+        errors = {}
+        for key, result in zip(endpoints, results):
+            expected = dict if key == "live" else list
+            if isinstance(result, Exception) or not isinstance(result, expected):
+                errors[key] = str(result) if isinstance(result, Exception) else "Invalid response shape"
+                data[key] = {} if key == "live" else []
+                _LOGGER.warning("KAUST %s endpoint unavailable: %s", key, errors[key])
+            else:
+                data[key] = result
+        if len(errors) == len(endpoints):
+            raise UpdateFailed("All KAUST station endpoints failed")
+        data["endpoint_errors"] = errors
+        return data
