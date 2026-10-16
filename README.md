@@ -122,9 +122,9 @@ Provides a Home Assistant weather entity with:
 - Temperature
 - Humidity
 - Wind speed / bearing
-- AQI-based condition mapping
+- Observation timestamps and air-quality context
 
-Note: the weather condition is derived from AQI status, not traditional meteorological conditions.
+The station does not provide sky conditions. The weather condition is therefore unknown; temperature, humidity and wind remain available. AQI is reported separately and never translated into sunny/cloudy/foggy conditions.
 
 ---
 
@@ -148,11 +148,11 @@ Data provided by KAUST Weather.
 
 ## Limitations
 
-- Rain totals are calculated from rate data. Small inaccuracies may occur during:
-  - Home Assistant downtime
-  - restart near midnight or month boundary
+- Rain totals are estimates from sampled intensity, not measured station accumulations.
+- Gaps longer than 30 minutes, unavailable readings, and restart gaps are excluded rather than filled. Missed rainfall cannot be recovered.
+- Daily and monthly totals reset at midnight in Asia/Riyadh, independent of Home Assistant timezone.
 
-- Weather condition is AQI-based, not cloud/precipitation based.
+- Sky condition is unknown because the station does not supply it.
 
 ---
 
@@ -162,7 +162,7 @@ Potential future improvements:
 - configurable scan interval
 - forecast support, if the API allows it
 - improved weather condition mapping
-- historical rainfall smoothing
+- historical rainfall recovery if an authoritative accumulation endpoint becomes available
 
 ---
 
@@ -190,4 +190,47 @@ Include logs and relevant entity states where possible.
 
 ## Version
 
-Current version: 0.2.0
+Current version: 0.3.0
+
+## 0.3.0 changes and data definitions
+
+Existing entity unique IDs are preserved. Previously accumulated rain totals are
+retained when their Saudi calendar period still matches; historical errors are
+not corrected retroactively. The first observation after startup establishes a
+new baseline and does not estimate rain during downtime. Each newer observation
+integrates the previous valid rate across at most 30 minutes. Daily/monthly
+intervals crossing midnight are clipped to the new Saudi calendar period.
+`estimated`, `reset_timezone`, and `last_reset` describe this behavior.
+
+AQI status uses the six standard categories: Good (0–50), Moderate (51–100),
+Unhealthy for Sensitive Groups (101–150), Unhealthy (151–200), Very Unhealthy
+(201–300), and Hazardous (301+). AQI and its sub-indices remain station-provided;
+they are not recomputed from concentration samples. AQI sensors expose
+observation time, freshness, dominant pollutant(s), and a link to KAUST guidance.
+Pollutant sub-indices include the documented averaging period.
+
+KAUST documents three-hour weighted particulate nearcasting, one-hour NO2/SO2,
+and eight-hour O3/CO averaging. Exact correspondence between additional API
+“Short”/“Shorter Average” fields and the main indices remains unverified; no new
+sensors are created for them. CO remains ppm pending clarification of conflicting
+API header/sample unit metadata. H2S missing sentinel values remain unknown,
+never zero. Missing flags, non-finite numbers and -9999 sentinels are rejected.
+
+API times without an offset are interpreted as Asia/Riyadh station time.
+Observations older than 45 minutes (three documented 15-minute update cycles),
+or more than five minutes in the future, are treated as unknown. This freshness
+policy is an integration choice, not a KAUST guarantee. Endpoints are fetched
+independently; a failed endpoint's readings become unknown while other endpoints
+continue updating. Total endpoint failure makes coordinator entities unavailable.
+
+Definitions and references:
+- https://hse.kaust.edu.sa/environment/weathers/air-quality-index
+- https://hse.kaust.edu.sa/environment/weathers/weather-monitoring-equipment
+- https://www.airnow.gov/aqi/aqi-basics/
+
+## Development checks
+
+Run `python -m unittest discover -s tests -v` and
+`python -m compileall -q custom_components`. Tests cover observation parsing,
+AQI boundaries, missing data, Saudi calendar boundaries, and rainfall intervals.
+These dependency-free tests do not replace an installed Home Assistant smoke test.

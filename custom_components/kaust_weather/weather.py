@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTRIBUTION, DOMAIN, METEO_IDS
 from .coordinator import KaustWeatherCoordinator
+from .data import aqi, aqi_status, live_response, meteorology, observation_attributes
 
 
 async def async_setup_entry(
@@ -25,21 +26,15 @@ async def async_setup_entry(
 
 def _live(data: dict[str, Any]) -> dict[str, Any]:
     """Return the nested live AQI response payload."""
-    return data.get("live", {}).get("aqi", {}).get("response", {})
+    return live_response(data)
 
 
 def _meteorology(data: dict[str, Any], item_id: int) -> Any:
-    """Extract meteorology value by item id."""
-    items = _live(data).get("meteorology", [])
-    for item in items:
-        if item.get("id") == item_id:
-            return item.get("value")
-    return None
+    return meteorology(data, item_id)
 
 
 def _aqi_status(data: dict[str, Any]) -> str | None:
-    """Return AQI status label."""
-    return _live(data).get("label")
+    return aqi_status(data)
 
 
 def _wind_compass(degrees: float | int | None) -> str | None:
@@ -107,33 +102,21 @@ class KaustWeatherEntity(CoordinatorEntity[KaustWeatherCoordinator], WeatherEnti
         return _meteorology(self.coordinator.data, METEO_IDS["wind_direction"])
 
     @property
-    def condition(self) -> str:
-        """Map AQI status to a Home Assistant weather condition."""
-        status = (_aqi_status(self.coordinator.data) or "").lower()
-
-        if "hazardous" in status:
-            return "exceptional"
-        if "very unhealthy" in status:
-            return "fog"
-        if "unhealthy" in status:
-            return "cloudy"
-        if "moderate" in status:
-            return "partlycloudy"
-        if "good" in status:
-            return "sunny"
-
-        return "partlycloudy"
+    def condition(self) -> str | None:
+        """The station does not supply sky conditions; AQI is not weather."""
+        return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional weather attributes."""
-        aqi = _live(self.coordinator.data).get("station_index")
+        station_aqi = aqi(self.coordinator.data)
         status = _aqi_status(self.coordinator.data)
         wind_bearing = _meteorology(self.coordinator.data, METEO_IDS["wind_direction"])
 
         return {
             "attribution": ATTRIBUTION,
-            "aqi": aqi,
+            "aqi": station_aqi,
+            **observation_attributes(self.coordinator.data),
             "aqi_status": status,
             "wind_compass": _wind_compass(wind_bearing),
             "solar_radiation": _meteorology(self.coordinator.data, METEO_IDS["solar_radiation"]),

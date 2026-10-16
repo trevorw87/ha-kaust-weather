@@ -10,19 +10,23 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    UnitOfDensity,
     PERCENTAGE,
     UnitOfSpeed,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_utc_time_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .const import ATTRIBUTION, DOMAIN, METEO_IDS
 from .coordinator import KaustWeatherCoordinator
+from .data import (STATION_TZ, aqi, aqi_status, fresh, items, live_response, meteorology,
+                   meteorology_item, number, observation_attributes, timestamp, valid_item)
+from .rain import increment, period_marker
 
 
 async def async_setup_entry(
@@ -154,14 +158,14 @@ async def async_setup_entry(
             coordinator,
             "pm10",
             "PM10",
-            CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+            UnitOfDensity,
         ),
         KaustWeatherSensor(
             entry.entry_id,
             coordinator,
             "pm25",
             "PM2.5",
-            CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+            UnitOfDensity,
         ),
         # Derived rainfall totals
         KaustWeatherDerivedRainSensor(
@@ -192,16 +196,11 @@ async def async_setup_entry(
 
 def _live_response(data: dict[str, Any]) -> dict[str, Any]:
     """Return the nested live AQI response payload."""
-    return data.get("live", {}).get("aqi", {}).get("response", {})
+    return live_response(data)
 
 
 def _meteorology_value(data: dict[str, Any], item_id: int) -> Any:
-    """Extract meteorology value by item id."""
-    items = _live_response(data).get("meteorology", [])
-    for item in items:
-        if item.get("id") == item_id:
-            return item.get("value")
-    return None
+    return meteorology(data, item_id)
 
 
 def _wind_compass(degrees: float | int | None) -> str | None:
@@ -221,42 +220,33 @@ def _wind_compass(degrees: float | int | None) -> str | None:
 
 def _pollutant_index(data: dict[str, Any], shortname: str) -> Any:
     """Extract AQI pollutant index by shortname."""
-    items = _live_response(data).get("poll_index", [])
-    for item in items:
+    for item in items(_live_response(data), "poll_index"):
         if item.get("shortname") == shortname:
-            return item.get("pollutant_index")
+            return number(item.get("pollutant_index")) if valid_item(item) else None
     return None
 
 
 def _graph_latest_value(data: dict[str, Any], graph_key: str, pollutant_name: str) -> Any:
     """Extract latest pollutant value from graph data."""
-    graph = data.get(graph_key, [])
-    if len(graph) < 2:
+    graph = data.get(graph_key) or []
+    if not isinstance(graph, list):
         return None
-
-    points = graph[1].get("airpointer_data", [])
+    points = [point for section in graph if isinstance(section, dict)
+              for point in items(section, "airpointer_data")
+              if timestamp(point.get("date_time")) is not None]
     if not points:
         return None
-
-    latest = points[-1]
-    for item in latest.get("parameter", []):
+    latest = max(points, key=lambda point: timestamp(point.get("date_time")))
+    if not fresh(latest.get("date_time")):
+        return None
+    for item in items(latest, "parameter"):
         if item.get("name") == pollutant_name:
-            value = item.get("value")
-            if value in (-9999, -9999.0):
-                return None
-            return value
-
+            return number(item.get("value")) if item.get("missing", 0) in (0, False, "0") else None
     return None
 
 
 def _safe_float(value: Any) -> float | None:
-    """Safely convert a value to float."""
-    if value in (None, "", "None"):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return number(value)
 
 
 class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntity):
@@ -370,7 +360,16 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes."""
-        return {"attribution": ATTRIBUTION}
+        attrs = {"attribution": ATTRIBUTION}
+        if self._sensor_key in {"aqi", "aqi_status"} or self._sensor_key.endswith("_index"):
+            attrs.update(observation_attributes(self.coordinator.data))
+            if self._sensor_key.startswith(("pm25", "pm10")):
+                attrs["averaging_period"] = "3 hours, weighted toward latest hour (KAUST documentation)"
+            elif self._sensor_key.startswith(("o3", "co")):
+                attrs["averaging_period"] = "8 hours"
+            elif self._sensor_key.startswith(("so2", "no2")):
+                attrs["averaging_period"] = "1 hour"
+        return attrs
 
     @property
     def native_value(self) -> Any:
@@ -399,10 +398,10 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
             return _meteorology_value(data, METEO_IDS["precipitation"])
 
         if self._sensor_key == "aqi":
-            return _live_response(data).get("station_index")
+            return aqi(data)
 
         if self._sensor_key == "aqi_status":
-            return _live_response(data).get("label")
+            return aqi_status(data)
 
         if self._sensor_key == "o3_index":
             return _pollutant_index(data, "O3")
@@ -479,6 +478,7 @@ class KaustWeatherDerivedRainSensor(
         self._value: float = 0.0
         self._last_calc_utc: datetime | None = None
         self._last_period_marker: str | None = None
+        self._previous_rate: float | None = None
 
         if reset_cycle is None:
             self._attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -501,11 +501,23 @@ class KaustWeatherDerivedRainSensor(
         return round(self._value, 3)
 
     @property
+    def last_reset(self) -> datetime | None:
+        """Identify daily/monthly resets for long-term statistics."""
+        if not self._reset_cycle or not self._last_period_marker:
+            return None
+        marker = self._last_period_marker
+        if self._reset_cycle == "monthly":
+            marker += "-01"
+        return datetime.fromisoformat(marker).replace(tzinfo=STATION_TZ)
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes used for restore and debugging."""
         return {
             "attribution": ATTRIBUTION,
-            "source_entity": "sensor.kaust_weather_precipitation",
+            "estimated": True,
+            "calculation": "sampled precipitation intensity; gaps over 30 minutes excluded",
+            "reset_timezone": "Asia/Riyadh",
             "reset_cycle": self._reset_cycle or "none",
             "last_calc_utc": self._last_calc_utc.isoformat() if self._last_calc_utc else None,
             "last_period_marker": self._last_period_marker,
@@ -514,6 +526,12 @@ class KaustWeatherDerivedRainSensor(
     async def async_added_to_hass(self) -> None:
         """Restore previous state after restart."""
         await super().async_added_to_hass()
+
+        if self._reset_cycle:
+            # Station calendar is Saudi local time, independent of HA's timezone.
+            self.async_on_remove(async_track_utc_time_change(
+                self.hass, self._async_reset_period, hour=21, minute=0, second=0
+            ))
 
         last_state = await self.async_get_last_state()
         if last_state is None:
@@ -525,60 +543,45 @@ class KaustWeatherDerivedRainSensor(
 
         attrs = last_state.attributes
 
-        last_calc_raw = attrs.get("last_calc_utc")
-        if isinstance(last_calc_raw, str):
-            parsed = dt_util.parse_datetime(last_calc_raw)
-            if parsed is not None:
-                self._last_calc_utc = parsed
-
         last_period_marker = attrs.get("last_period_marker")
         if isinstance(last_period_marker, str):
             self._last_period_marker = last_period_marker
 
+        self._async_reset_period(dt_util.utcnow())
+
+    @callback
+    def _async_reset_period(self, now: datetime) -> None:
+        """Reset at station midnight even when observations stop."""
+        marker = self._current_period_marker(now)
+        if self._reset_cycle and marker != self._last_period_marker:
+            self._value = 0.0
+            self._last_period_marker = marker
+            self.async_write_ha_state()
+
     def _current_period_marker(self, now: datetime) -> str | None:
         """Return current reset marker for daily/monthly sensors."""
-        if self._reset_cycle == "daily":
-            return now.date().isoformat()
-
-        if self._reset_cycle == "monthly":
-            return f"{now.year:04d}-{now.month:02d}"
-
-        return None
+        return period_marker(now, self._reset_cycle)
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Update totals when fresh coordinator data arrives."""
+        """Integrate each station observation once; never fill outages with rain."""
         now = dt_util.utcnow()
-        current_marker = self._current_period_marker(now)
-
-        if self._reset_cycle is not None and self._last_period_marker is None:
-            self._last_period_marker = current_marker
-
-        if (
-            self._reset_cycle is not None
-            and current_marker is not None
-            and self._last_period_marker is not None
-            and current_marker != self._last_period_marker
-        ):
+        marker = self._current_period_marker(now)
+        if self._reset_cycle and marker != self._last_period_marker:
             self._value = 0.0
-            self._last_period_marker = current_marker
-            self._last_calc_utc = now
-            self.async_write_ha_state()
-            return
+            self._last_period_marker = marker
 
-        rate_mm_per_hour = _safe_float(
-            _meteorology_value(self.coordinator.data, METEO_IDS["precipitation"])
-        )
-
-        if self._last_calc_utc is None:
-            self._last_calc_utc = now
-            self.async_write_ha_state()
-            return
-
-        if rate_mm_per_hour is not None and rate_mm_per_hour >= 0:
-            elapsed_hours = (now - self._last_calc_utc).total_seconds() / 3600.0
-            if elapsed_hours > 0:
-                self._value += rate_mm_per_hour * elapsed_hours
-
-        self._last_calc_utc = now
+        item = meteorology_item(self.coordinator.data, METEO_IDS["precipitation"])
+        observed = timestamp(item.get("time_stamp"))
+        rate = meteorology(self.coordinator.data, METEO_IDS["precipitation"])
+        if not self.coordinator.last_update_success or rate is None or rate < 0:
+            self._last_calc_utc = None
+            self._previous_rate = None
+        elif observed is not None and (self._last_calc_utc is None or observed > self._last_calc_utc):
+            # A delayed pre-midnight observation must not enter today's total.
+            if not self._reset_cycle or period_marker(observed, self._reset_cycle) == marker:
+                self._value += increment(self._last_calc_utc, observed,
+                                         self._previous_rate, self._reset_cycle)
+            self._last_calc_utc = observed
+            self._previous_rate = rate
         self.async_write_ha_state()
