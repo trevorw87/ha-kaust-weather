@@ -49,8 +49,15 @@ def items(response: dict, key: str) -> list[dict]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
-def valid_item(item: dict) -> bool:
-    return item.get("missing", 0) in (0, False, "0") and fresh(item.get("time_stamp"))
+def usable_timestamp(value: Any) -> bool:
+    """Allow delayed observations for display, but reject invalid/future times."""
+    observed = timestamp(value)
+    return observed is not None and observed <= datetime.now(timezone.utc) + timedelta(minutes=5)
+
+
+def valid_item(item: dict, *, require_fresh: bool = False) -> bool:
+    check_time = fresh if require_fresh else usable_timestamp
+    return item.get("missing", 0) in (0, False, "0") and check_time(item.get("time_stamp"))
 
 
 def meteorology_item(data: dict, item_id: int) -> dict:
@@ -58,9 +65,9 @@ def meteorology_item(data: dict, item_id: int) -> dict:
                  if item.get("id") == item_id), {})
 
 
-def meteorology(data: dict, item_id: int) -> float | None:
+def meteorology(data: dict, item_id: int, *, require_fresh: bool = False) -> float | None:
     item = meteorology_item(data, item_id)
-    return number(item.get("value")) if valid_item(item) else None
+    return number(item.get("value")) if valid_item(item, require_fresh=require_fresh) else None
 
 
 def aqi(data: dict) -> float | None:
@@ -81,6 +88,17 @@ def aqi_status(data: dict) -> str | None:
     return "Hazardous"
 
 
+def reading_attributes(value: Any) -> dict:
+    """Expose observation age so delayed values cannot be mistaken for live data."""
+    observed = timestamp(value)
+    age = (datetime.now(timezone.utc) - observed).total_seconds() / 60 if observed else None
+    return {
+        "observation_time": observed.isoformat() if observed else None,
+        "observation_age_minutes": round(max(0, age), 1) if age is not None else None,
+        "data_stale": not fresh(value),
+    }
+
+
 def observation_attributes(data: dict) -> dict:
     response = live_response(data)
     indices = [(number(item.get("pollutant_index")), item.get("shortname"))
@@ -88,10 +106,8 @@ def observation_attributes(data: dict) -> dict:
     indices = [(value, name) for value, name in indices
                if value is not None and value >= 0 and isinstance(name, str)]
     highest = max((value for value, _ in indices), default=None)
-    observed = timestamp(response.get("time_stamp"))
     return {
-        "observation_time": observed.isoformat() if observed else None,
-        "data_stale": not fresh(response.get("time_stamp")),
+        **reading_attributes(response.get("time_stamp")),
         "dominant_pollutants": [name for value, name in indices if value == highest],
         "guidance_url": "https://hse.kaust.edu.sa/environment/weathers/air-quality-index",
     }

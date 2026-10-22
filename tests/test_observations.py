@@ -20,6 +20,26 @@ from kaust_test import data, rain
 
 
 class ObservationTests(unittest.TestCase):
+    def test_delayed_values_visible_but_marked_stale(self):
+        stamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        response = {"time_stamp": stamp, "station_index": 32,
+                    "meteorology": [{"id": 3, "value": 31.66, "time_stamp": stamp}],
+                    "poll_index": [{"shortname": "PM 2.5", "pollutant_index": 32, "time_stamp": stamp}]}
+        payload = {"live": {"aqi": {"response": response}}}
+        self.assertEqual(data.meteorology(payload, 3), 31.66)
+        self.assertIsNone(data.meteorology(payload, 3, require_fresh=True))
+        self.assertEqual(data.aqi(payload), 32)
+        self.assertEqual(data.aqi_status(payload), "Good")
+        attrs = data.observation_attributes(payload)
+        self.assertTrue(attrs["data_stale"])
+        self.assertGreaterEqual(attrs["observation_age_minutes"], 120)
+        self.assertEqual(attrs["dominant_pollutants"], ["PM 2.5"])
+
+    def test_future_observation_not_displayed(self):
+        stamp = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        payload = {"live": {"aqi": {"response": {"time_stamp": stamp, "station_index": 32}}}}
+        self.assertIsNone(data.aqi(payload))
+
     def test_invalid_numbers(self):
         for value in (None, "", "None", -9999, "-9999", "nan", "inf", True):
             with self.subTest(value=value):

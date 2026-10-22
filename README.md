@@ -190,7 +190,7 @@ Include logs and relevant entity states where possible.
 
 ## Version
 
-Current version: 0.3.0
+Current version: 0.3.1
 
 ## 0.3.0 changes and data definitions
 
@@ -217,9 +217,13 @@ API header/sample unit metadata. H2S missing sentinel values remain unknown,
 never zero. Missing flags, non-finite numbers and -9999 sentinels are rejected.
 
 API times without an offset are interpreted as Asia/Riyadh station time.
-Observations older than 45 minutes (three documented 15-minute update cycles),
-or more than five minutes in the future, are treated as unknown. This freshness
-policy is an integration choice, not a KAUST guarantee. Endpoints are fetched
+Observations older than 45 minutes (three documented 15-minute update cycles)
+remain visible as the latest station-reported values, with `data_stale: true`,
+`observation_time`, and `observation_age_minutes` attributes. These values are
+not current conditions; dashboards and automations should inspect `data_stale`.
+Stale precipitation never contributes to rainfall accumulation. Values more than
+five minutes in the future or with missing/invalid timestamps remain unknown.
+The freshness threshold is an integration choice, not a KAUST guarantee. Endpoints are fetched
 independently; a failed endpoint's readings become unknown while other endpoints
 continue updating. Total endpoint failure makes coordinator entities unavailable.
 
@@ -234,3 +238,12 @@ Run `python -m unittest discover -s tests -v` and
 `python -m compileall -q custom_components`. Tests cover observation parsing,
 AQI boundaries, missing data, Saudi calendar boundaries, and rainfall intervals.
 These dependency-free tests do not replace an installed Home Assistant smoke test.
+
+## 0.3.1 regression fixes
+
+PM10 and PM2.5 now use the micrograms-per-cubic-meter enum member rather than
+the enum class, fixing JSON serialization failures affecting Home Assistant's
+frontend and recorder. Delayed valid observations remain visible and explicitly
+marked stale across weather, meteorology, AQI and pollutant readings. This does
+not restore cached values after failed HTTP requests: failed endpoint readings
+remain unknown, and invalid/missing measurements still remain unknown.
