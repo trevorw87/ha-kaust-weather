@@ -190,7 +190,7 @@ Include logs and relevant entity states where possible.
 
 ## Version
 
-Current version: 0.3.1
+Current version: 0.3.2
 
 ## 0.3.0 changes and data definitions
 
@@ -247,3 +247,12 @@ frontend and recorder. Delayed valid observations remain visible and explicitly
 marked stale across weather, meteorology, AQI and pollutant readings. This does
 not restore cached values after failed HTTP requests: failed endpoint readings
 remain unknown, and invalid/missing measurements still remain unknown.
+
+## Integration thumbnail (0.3.2)
+
+The existing weather artwork is now included as `brand/icon.png` inside the
+integration, allowing Home Assistant 2026.3+ to display the integration thumbnail
+without a separate brands-repository submission. Install this version through
+HACS and restart Home Assistant; refresh the browser if the old placeholder is
+cached. Older Home Assistant versions and some HACS catalog views may still use
+remote brand images and display a placeholder.
