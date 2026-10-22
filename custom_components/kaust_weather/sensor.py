@@ -24,8 +24,9 @@ from homeassistant.util import dt as dt_util
 
 from .const import ATTRIBUTION, DOMAIN, METEO_IDS
 from .coordinator import KaustWeatherCoordinator
-from .data import (STATION_TZ, aqi, aqi_status, fresh, items, live_response, meteorology,
-                   meteorology_item, number, observation_attributes, timestamp, valid_item)
+from .data import (STATION_TZ, aqi, aqi_status, items, live_response, meteorology,
+                   meteorology_item, number, observation_attributes, reading_attributes,
+                   timestamp, usable_timestamp, valid_item)
 from .rain import increment, period_marker
 
 
@@ -158,14 +159,14 @@ async def async_setup_entry(
             coordinator,
             "pm10",
             "PM10",
-            UnitOfDensity,
+            UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         ),
         KaustWeatherSensor(
             entry.entry_id,
             coordinator,
             "pm25",
             "PM2.5",
-            UnitOfDensity,
+            UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         ),
         # Derived rainfall totals
         KaustWeatherDerivedRainSensor(
@@ -226,18 +227,23 @@ def _pollutant_index(data: dict[str, Any], shortname: str) -> Any:
     return None
 
 
-def _graph_latest_value(data: dict[str, Any], graph_key: str, pollutant_name: str) -> Any:
-    """Extract latest pollutant value from graph data."""
+def _graph_latest_point(data: dict[str, Any], graph_key: str) -> dict:
+    """Find the latest timestamped point without assuming response order."""
     graph = data.get(graph_key) or []
     if not isinstance(graph, list):
-        return None
+        return {}
     points = [point for section in graph if isinstance(section, dict)
               for point in items(section, "airpointer_data")
               if timestamp(point.get("date_time")) is not None]
     if not points:
-        return None
-    latest = max(points, key=lambda point: timestamp(point.get("date_time")))
-    if not fresh(latest.get("date_time")):
+        return {}
+    return max(points, key=lambda point: timestamp(point.get("date_time")))
+
+
+def _graph_latest_value(data: dict[str, Any], graph_key: str, pollutant_name: str) -> Any:
+    """Keep delayed station readings visible with explicit age metadata."""
+    latest = _graph_latest_point(data, graph_key)
+    if not usable_timestamp(latest.get("date_time")):
         return None
     for item in items(latest, "parameter"):
         if item.get("name") == pollutant_name:
@@ -361,6 +367,14 @@ class KaustWeatherSensor(CoordinatorEntity[KaustWeatherCoordinator], SensorEntit
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes."""
         attrs = {"attribution": ATTRIBUTION}
+        if self._sensor_key in METEO_IDS or self._sensor_key == "wind_compass":
+            key = "wind_direction" if self._sensor_key == "wind_compass" else self._sensor_key
+            item = meteorology_item(self.coordinator.data, METEO_IDS[key])
+            attrs.update(reading_attributes(item.get("time_stamp")))
+        elif self._sensor_key in {"no", "no2", "co", "o3", "so2", "h2s", "pm10", "pm25"}:
+            graph_key = "graph3" if self._sensor_key in {"pm10", "pm25"} else "graph2"
+            point = _graph_latest_point(self.coordinator.data, graph_key)
+            attrs.update(reading_attributes(point.get("date_time")))
         if self._sensor_key in {"aqi", "aqi_status"} or self._sensor_key.endswith("_index"):
             attrs.update(observation_attributes(self.coordinator.data))
             if self._sensor_key.startswith(("pm25", "pm10")):
@@ -573,7 +587,7 @@ class KaustWeatherDerivedRainSensor(
 
         item = meteorology_item(self.coordinator.data, METEO_IDS["precipitation"])
         observed = timestamp(item.get("time_stamp"))
-        rate = meteorology(self.coordinator.data, METEO_IDS["precipitation"])
+        rate = meteorology(self.coordinator.data, METEO_IDS["precipitation"], require_fresh=True)
         if not self.coordinator.last_update_success or rate is None or rate < 0:
             self._last_calc_utc = None
             self._previous_rate = None

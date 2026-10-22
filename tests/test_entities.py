@@ -3,6 +3,8 @@ import ast
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
+import json
+from enum import StrEnum
 import types
 import unittest
 from unittest.mock import AsyncMock
@@ -48,7 +50,7 @@ def sensor_namespace(now):
     ns.update({"Any": object, "CoordinatorEntity": Entity, "SensorEntity": Sensor,
                "RestoreEntity": Restore, "KaustWeatherCoordinator": object,
                "SensorDeviceClass": types.SimpleNamespace(PRECIPITATION="precipitation"),
-               "SensorStateClass": types.SimpleNamespace(TOTAL="total", TOTAL_INCREASING="total_increasing"),
+               "SensorStateClass": types.SimpleNamespace(TOTAL="total", TOTAL_INCREASING="total_increasing", MEASUREMENT="measurement"),
                "callback": lambda fn: fn, "dt_util": types.SimpleNamespace(utcnow=lambda: now),
                "METEO_IDS": {"precipitation": 7}, "increment": rain.increment,
                "period_marker": rain.period_marker})
@@ -70,7 +72,7 @@ class EntityTests(unittest.TestCase):
         coordinator = types.SimpleNamespace(last_update_success=True, data={
             "live": {"aqi": {"response": {"meteorology": [item]}}}})
         # Freeze parsing freshness too, since test dates deliberately sit at midnight.
-        ns["meteorology"] = lambda payload, key: 6
+        ns["meteorology"] = lambda payload, key, **kwargs: 6
         sensor = ns["KaustWeatherDerivedRainSensor"]("entry", coordinator, "rain_today", "Rain Today", "daily")
         sensor._value = 10
         sensor._last_period_marker = rain.period_marker(now - timedelta(days=1), "daily")
@@ -107,6 +109,40 @@ class EntityTests(unittest.TestCase):
 
 
 class EndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_sensor_units_are_json_serializable(self):
+        """Exercise actual setup arguments; passing an enum class must fail."""
+        class UnitOfDensity(StrEnum):
+            MICROGRAMS_PER_CUBIC_METER = "µg/m³"
+        class DeviceClasses:
+            def __getattr__(self, name):
+                return name.lower()
+        ns = sensor_namespace(datetime.now(timezone.utc))
+        ns.update({"UnitOfDensity": UnitOfDensity, "SensorDeviceClass": DeviceClasses(),
+                   "UnitOfTemperature": types.SimpleNamespace(CELSIUS="°C"),
+                   "UnitOfSpeed": types.SimpleNamespace(METERS_PER_SECOND="m/s"),
+                   "PERCENTAGE": "%", "DOMAIN": "kaust_weather"})
+        entities = []
+        hass = types.SimpleNamespace(data={"kaust_weather": {"entry": object()}})
+        await ns["async_setup_entry"](hass, types.SimpleNamespace(entry_id="entry"), entities.extend)
+        units = {entity._sensor_key: entity._attr_native_unit_of_measurement for entity in entities}
+        json.dumps(units)
+        self.assertEqual(units["pm10"], "µg/m³")
+        self.assertEqual(units["pm25"], "µg/m³")
+
+    async def test_stale_rain_never_accumulates(self):
+        now = datetime.now(timezone.utc)
+        ns = sensor_namespace(now)
+        item = {"id": 7, "value": 6, "time_stamp": (now - timedelta(hours=2)).isoformat()}
+        coordinator = types.SimpleNamespace(last_update_success=True, data={
+            "live": {"aqi": {"response": {"meteorology": [item]}}}})
+        sensor = ns["KaustWeatherDerivedRainSensor"]("entry", coordinator, "rain_accumulated", "Rain", None)
+        sensor._last_calc_utc = now - timedelta(hours=2, minutes=15)
+        sensor._previous_rate = 6
+        sensor._value = 10
+        sensor._handle_coordinator_update()
+        self.assertEqual(sensor.native_value, 10)
+        self.assertIsNone(sensor._last_calc_utc)
+
     async def test_restore_total_but_not_downtime_cursor(self):
         now = datetime.now(timezone.utc)
         ns = sensor_namespace(now)
