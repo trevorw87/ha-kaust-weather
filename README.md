@@ -190,7 +190,7 @@ Include logs and relevant entity states where possible.
 
 ## Version
 
-Current version: 0.3.2
+Current version: 0.3.3
 
 ## 0.3.0 changes and data definitions
 
@@ -202,16 +202,16 @@ integrates the previous valid rate across at most 30 minutes. Daily/monthly
 intervals crossing midnight are clipped to the new Saudi calendar period.
 `estimated`, `reset_timezone`, and `last_reset` describe this behavior.
 
-AQI status uses the six standard categories: Good (0–50), Moderate (51–100),
-Unhealthy for Sensitive Groups (101–150), Unhealthy (151–200), Very Unhealthy
-(201–300), and Hazardous (301+). AQI and its sub-indices remain station-provided;
+AQI status uses the six standard categories: Good (0â€“50), Moderate (51â€“100),
+Unhealthy for Sensitive Groups (101â€“150), Unhealthy (151â€“200), Very Unhealthy
+(201â€“300), and Hazardous (301+). AQI and its sub-indices remain station-provided;
 they are not recomputed from concentration samples. AQI sensors expose
 observation time, freshness, dominant pollutant(s), and a link to KAUST guidance.
 Pollutant sub-indices include the documented averaging period.
 
 KAUST documents three-hour weighted particulate nearcasting, one-hour NO2/SO2,
 and eight-hour O3/CO averaging. Exact correspondence between additional API
-“Short”/“Shorter Average” fields and the main indices remains unverified; no new
+â€œShortâ€/â€œShorter Averageâ€ fields and the main indices remains unverified; no new
 sensors are created for them. CO remains ppm pending clarification of conflicting
 API header/sample unit metadata. H2S missing sentinel values remain unknown,
 never zero. Missing flags, non-finite numbers and -9999 sentinels are rejected.
